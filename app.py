@@ -172,6 +172,89 @@ def generate_thermal_chart(
     )
     return fig
 
+# ----------------- MATPLOTLIB FALLBACK PLOTTING UTILITY -----------------
+def generate_thermal_chart_matplotlib(
+    placement_temp,
+    ambient_temp,
+    raft_thickness,
+    max_temp_rise,
+    core_warning
+):
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    import io
+    
+    days = np.linspace(0, 14, 250)
+    t_peak = 2.5
+    shape_factor = 1.8
+
+    k_cooling = 0.05 + 25.0 / raft_thickness
+    f_surface_transfer = 0.15 + 37.5 / raft_thickness
+
+    # Core temp curve equation
+    core_temp_curve = (
+        ambient_temp +
+        (placement_temp - ambient_temp) * np.exp(-k_cooling * days) +
+        max_temp_rise * (days / t_peak) ** shape_factor * np.exp(shape_factor * (1 - days / t_peak))
+    )
+
+    # Surface Temperature curve
+    surface_temp_curve = ambient_temp + f_surface_transfer * (core_temp_curve - ambient_temp)
+
+    # Flat Ambient Temperature
+    ambient_curve = np.full_like(days, ambient_temp)
+
+    # Dotted 21°C Differential Limit Line (Surface Temp + 21°C)
+    differential_limit_curve = surface_temp_curve + 21.0
+
+    # Build Matplotlib Chart
+    fig, ax = plt.subplots(figsize=(8, 4.5), dpi=300)
+    
+    # Styling to match the PDF light theme
+    ax.set_facecolor('#ffffff')
+    fig.patch.set_facecolor('#ffffff')
+    
+    # Hide top/right spines
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.spines['left'].set_color('#cbd5e1')
+    ax.spines['bottom'].set_color('#cbd5e1')
+    
+    # Grid lines
+    ax.grid(True, linestyle=':', color='#cbd5e1', alpha=0.7)
+    
+    # Plot curves
+    ax.plot(days, ambient_curve, label='Ambient/Air Temp', color='#64748b', linewidth=1.5, linestyle='--')
+    ax.plot(days, surface_temp_curve, label='Estimated Surface Temp', color='#0284c7', linewidth=2)
+    
+    core_color = '#ef4444' if core_warning else '#f97316'
+    ax.plot(days, core_temp_curve, label='Estimated Core Temp', color=core_color, linewidth=2.5)
+    
+    ax.plot(days, differential_limit_curve, label='Cracking Limit (Surface + 21°C)', color='#dc2626', linewidth=1.5, linestyle=':')
+    
+    # Titles & Labels
+    ax.set_title("14-Day Thermal Evolution Analysis", fontsize=12, fontweight='bold', pad=12, color='#0f172a')
+    ax.set_xlabel("Time (Days)", fontsize=10, labelpad=8, color='#475569')
+    ax.set_ylabel("Temperature (°C)", fontsize=10, labelpad=8, color='#475569')
+    
+    # Tick colors
+    ax.tick_params(colors='#475569', labelsize=9)
+    
+    # Legend
+    legend = ax.legend(loc='upper right', frameon=True, fontsize=8)
+    frame = legend.get_frame()
+    frame.set_facecolor('#ffffff')
+    frame.set_edgecolor('#cbd5e1')
+    frame.set_alpha(0.85)
+    
+    # Save to buffer
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', bbox_inches='tight', dpi=300, facecolor='#ffffff')
+    plt.close(fig)
+    buf.seek(0)
+    return buf.read()
+
 # ----------------- PDF REPORT GENERATOR CLASS -----------------
 class ConcretePDFReport(FPDF):
     def header(self):
@@ -428,12 +511,21 @@ def build_pdf_report(
         is_dark=False
     )
     
-    # Export Plotly Figure to image bytes using Kaleido
+    # Export Plotly Figure to image bytes using Kaleido (fallback to Matplotlib if Kaleido fails)
     chart_img_bytes = None
     try:
         chart_img_bytes = fig_light.to_image(format="png", width=800, height=450, scale=2)
-    except Exception as e:
-        pass
+    except Exception as e_kaleido:
+        try:
+            chart_img_bytes = generate_thermal_chart_matplotlib(
+                placement_temp=placement_temp,
+                ambient_temp=ambient_temp,
+                raft_thickness=thickness,
+                max_temp_rise=max_temp_rise,
+                core_warning=core_warn
+            )
+        except Exception as e_matplotlib:
+            pass
         
     # Page 2: Visualization and References
     pdf.add_page()
