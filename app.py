@@ -1,8 +1,34 @@
+import os
+import sys
+
+# Patch Kaleido tool startup wrapper for directories containing spaces
+def patch_kaleido():
+    try:
+        import kaleido
+        base_dir = os.path.dirname(kaleido.__file__)
+        executable_path = os.path.join(base_dir, "executable", "kaleido")
+        if os.path.exists(executable_path):
+            with open(executable_path, "r") as f:
+                content = f.read()
+            modified = False
+            if 'cd $DIR' in content:
+                content = content.replace('cd $DIR', 'cd "$DIR"')
+                modified = True
+            if './bin/kaleido $@' in content:
+                content = content.replace('./bin/kaleido $@', './bin/kaleido "$@"')
+                modified = True
+            if modified:
+                with open(executable_path, "w") as f:
+                    f.write(content)
+    except Exception as e:
+        pass
+
+patch_kaleido()
+
 import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-import os
 import base64
 from PIL import Image
 from fpdf import FPDF
@@ -15,6 +41,136 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+# ----------------- UNIFIED PLOTTING UTILITY -----------------
+def generate_thermal_chart(
+    placement_temp,
+    ambient_temp,
+    raft_thickness,
+    max_temp_rise,
+    core_warning,
+    is_dark=True
+):
+    days = np.linspace(0, 14, 250)
+    t_peak = 2.5
+    shape_factor = 1.8
+
+    k_cooling = 0.05 + 25.0 / raft_thickness
+    f_surface_transfer = 0.15 + 37.5 / raft_thickness
+
+    # Core temp curve equation
+    core_temp_curve = (
+        ambient_temp +
+        (placement_temp - ambient_temp) * np.exp(-k_cooling * days) +
+        max_temp_rise * (days / t_peak) ** shape_factor * np.exp(shape_factor * (1 - days / t_peak))
+    )
+
+    # Surface Temperature curve
+    surface_temp_curve = ambient_temp + f_surface_transfer * (core_temp_curve - ambient_temp)
+
+    # Flat Ambient Temperature
+    ambient_curve = np.full_like(days, ambient_temp)
+
+    # Dotted 21°C Differential Limit Line (Surface Temp + 21°C)
+    differential_limit_curve = surface_temp_curve + 21.0
+
+    # Build Plotly Chart
+    fig = go.Figure()
+
+    # Colors
+    if is_dark:
+        bg_color = '#090d13'
+        grid_color = '#1f2937'
+        text_color = '#8b949e'
+        ambient_color = '#8b949e'
+        surface_color = '#58a6ff'
+        core_color = '#ff7b72' if core_warning else '#e8bc91'
+        limit_color = '#f85149'
+        legend_bg = 'rgba(15, 20, 28, 0.85)'
+        legend_border = '#1f2937'
+        title_color = '#ffffff'
+    else:
+        # Light theme colors for PDF
+        bg_color = '#ffffff'
+        grid_color = '#e2e8f0'
+        text_color = '#475569'
+        ambient_color = '#64748b'
+        surface_color = '#0284c7'
+        core_color = '#ef4444' if core_warning else '#f97316'
+        limit_color = '#dc2626'
+        legend_bg = 'rgba(255, 255, 255, 0.85)'
+        legend_border = '#cbd5e1'
+        title_color = '#0f172a'
+
+    # Ambient line
+    fig.add_trace(go.Scatter(
+        x=days, y=ambient_curve,
+        mode='lines',
+        name='Ambient/Air Temp',
+        line=dict(color=ambient_color, width=2, dash='dash')
+    ))
+
+    # Surface Temp line
+    fig.add_trace(go.Scatter(
+        x=days, y=surface_temp_curve,
+        mode='lines',
+        name='Estimated Surface Temp',
+        line=dict(color=surface_color, width=3)
+    ))
+
+    # Core Temp line
+    fig.add_trace(go.Scatter(
+        x=days, y=core_temp_curve,
+        mode='lines',
+        name='Estimated Core Temp',
+        line=dict(color=core_color, width=4)
+    ))
+
+    # Cracking limit (Surface + 21°C)
+    fig.add_trace(go.Scatter(
+        x=days, y=differential_limit_curve,
+        mode='lines',
+        name='Cracking Limit (Surface + 21°C)',
+        line=dict(color=limit_color, width=2, dash='dot')
+    ))
+
+    # Chart Styling
+    fig.update_layout(
+        title=dict(
+            text="<b>14-Day Thermal Evolution Analysis</b>",
+            font=dict(size=18, family="Outfit, sans-serif", color=title_color)
+        ),
+        xaxis=dict(
+            title="Time (Days)",
+            gridcolor=grid_color,
+            zerolinecolor=grid_color,
+            title_font=dict(color=text_color),
+            tickfont=dict(color=text_color)
+        ),
+        yaxis=dict(
+            title="Temperature (°C)",
+            gridcolor=grid_color,
+            zerolinecolor=grid_color,
+            title_font=dict(color=text_color),
+            tickfont=dict(color=text_color)
+        ),
+        plot_bgcolor=bg_color,
+        paper_bgcolor=bg_color,
+        legend=dict(
+            font=dict(color=text_color),
+            bgcolor=legend_bg,
+            bordercolor=legend_border,
+            borderwidth=1,
+            yanchor="top",
+            y=0.99,
+            xanchor="right",
+            x=0.99
+        ),
+        margin=dict(l=40, r=40, t=60, b=40),
+        hovermode='x unified',
+        height=500
+    )
+    return fig
 
 # ----------------- PDF REPORT GENERATOR CLASS -----------------
 class ConcretePDFReport(FPDF):
@@ -88,9 +244,10 @@ def build_pdf_report(
     core_warn,
     diff_warn
 ):
+    # Set margins first so they apply to all pages
     pdf = ConcretePDFReport()
-    pdf.add_page()
     pdf.set_margins(15, 35, 15)
+    pdf.add_page()
     
     # 1. Project metadata block
     pdf.set_y(40)
@@ -130,15 +287,15 @@ def build_pdf_report(
     pdf.set_font("Helvetica", "B", 12)
     pdf.set_text_color(15, 20, 28)
     pdf.cell(0, 8, "2. Mix Design & Environmental Parameters", new_x="LMARGIN", new_y="NEXT")
-    pdf.ln(2)
+    pdf.ln(1)
     
     # Table Header
     pdf.set_fill_color(240, 240, 240)
     pdf.set_font("Helvetica", "B", 10)
     pdf.set_text_color(50, 50, 50)
-    pdf.cell(100, 8, "Parameter Description", border=True, align="L", fill=True)
-    pdf.cell(40, 8, "Value", border=True, align="C", fill=True)
-    pdf.cell(40, 8, "Unit", border=True, align="C", fill=True, new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(100, 7, "Parameter Description", border=True, align="L", fill=True)
+    pdf.cell(40, 7, "Value", border=True, align="C", fill=True)
+    pdf.cell(40, 7, "Unit", border=True, align="C", fill=True, new_x="LMARGIN", new_y="NEXT")
     
     # Table Rows
     pdf.set_font("Helvetica", "", 10)
@@ -151,70 +308,73 @@ def build_pdf_report(
         ("Foundation Slab Thickness (H)", f"{thickness:.0f}", "cm"),
     ]
     for desc_row, val, unit in rows:
-        pdf.cell(100, 8, f" {desc_row}", border=True)
-        pdf.cell(40, 8, val, border=True, align="C")
-        pdf.cell(40, 8, unit, border=True, align="C", new_x="LMARGIN", new_y="NEXT")
-    pdf.ln(5)
+        pdf.cell(100, 7, f" {desc_row}", border=True)
+        pdf.cell(40, 7, val, border=True, align="C")
+        pdf.cell(40, 7, unit, border=True, align="C", new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(3)
     
     # 3. Calculations section
     pdf.set_font("Helvetica", "B", 12)
     pdf.set_text_color(15, 20, 28)
     pdf.cell(0, 8, "3. Thermal Calculations & Intermediate Math", new_x="LMARGIN", new_y="NEXT")
-    pdf.ln(2)
+    pdf.ln(1)
     
     # Effective Cement
     pdf.set_font("Helvetica", "B", 10)
     pdf.set_text_color(15, 20, 28)
-    pdf.cell(70, 6, "Effective Cementitious (C_eff):", new_x="RIGHT", new_y="TOP")
+    pdf.cell(70, 5, "Effective Cementitious (C_eff):", new_x="RIGHT", new_y="TOP")
     pdf.set_font("Helvetica", "", 10)
     pdf.set_text_color(60, 60, 60)
-    pdf.cell(0, 6, f"{effective_cement:.1f} kg/m³", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(35, 5, f"{effective_cement:.1f} kg/m³", new_x="RIGHT", new_y="TOP")
     pdf.set_font("Helvetica", "I", 9)
-    pdf.cell(0, 5, "   Formula: Cement + 0.5 * GGBFS + 1.2 * Silica", new_x="LMARGIN", new_y="NEXT")
-    pdf.ln(2)
+    pdf.set_text_color(120, 120, 120)
+    pdf.cell(0, 5, "  Formula: Cement + 0.5 * GGBFS + 1.2 * Silica", new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(1)
     
     # Thickness Factor
     pdf.set_font("Helvetica", "B", 10)
     pdf.set_text_color(15, 20, 28)
-    pdf.cell(70, 6, "Thickness Correction Factor (F_thickness):", new_x="RIGHT", new_y="TOP")
+    pdf.cell(70, 5, "Thickness Correction Factor (F_thickness):", new_x="RIGHT", new_y="TOP")
     pdf.set_font("Helvetica", "", 10)
     pdf.set_text_color(60, 60, 60)
-    pdf.cell(0, 6, f"{f_thickness:.4f}", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(35, 5, f"{f_thickness:.4f}", new_x="RIGHT", new_y="TOP")
     pdf.set_font("Helvetica", "I", 9)
-    pdf.cell(0, 5, "   Formula: 1.0 - exp(-0.015 * Thickness)", new_x="LMARGIN", new_y="NEXT")
-    pdf.ln(2)
+    pdf.set_text_color(120, 120, 120)
+    pdf.cell(0, 5, "  Formula: 1.0 - exp(-0.015 * Thickness)", new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(1)
     
     # Max Temperature Rise
     pdf.set_font("Helvetica", "B", 10)
     pdf.set_text_color(15, 20, 28)
-    pdf.cell(70, 6, "Max Adiabatic Temp Rise (dT_max):", new_x="RIGHT", new_y="TOP")
+    pdf.cell(70, 5, "Max Adiabatic Temp Rise (dT_max):", new_x="RIGHT", new_y="TOP")
     pdf.set_font("Helvetica", "", 10)
     pdf.set_text_color(60, 60, 60)
-    pdf.cell(0, 6, f"{max_temp_rise:.1f} °C", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(35, 5, f"{max_temp_rise:.1f} °C", new_x="RIGHT", new_y="TOP")
     pdf.set_font("Helvetica", "I", 9)
-    pdf.cell(0, 5, "   Formula: (C_eff / 100) * 12.0 * F_thickness", new_x="LMARGIN", new_y="NEXT")
-    pdf.ln(5)
+    pdf.set_text_color(120, 120, 120)
+    pdf.cell(0, 5, "  Formula: (C_eff / 100) * 12.0 * F_thickness", new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(3)
     
     # 4. Compliance Check
     pdf.set_font("Helvetica", "B", 12)
     pdf.set_text_color(15, 20, 28)
     pdf.cell(0, 8, "4. Critical Limit Compliance Checks", new_x="LMARGIN", new_y="NEXT")
-    pdf.ln(2)
+    pdf.ln(1)
     
     # Table Header
     pdf.set_fill_color(240, 240, 240)
     pdf.set_font("Helvetica", "B", 10)
     pdf.set_text_color(50, 50, 50)
-    pdf.cell(60, 8, "Metric Checked", border=True, fill=True)
-    pdf.cell(40, 8, "ACI Limit", border=True, align="C", fill=True)
-    pdf.cell(40, 8, "Estimated Value", border=True, align="C", fill=True)
-    pdf.cell(40, 8, "Status", border=True, align="C", fill=True, new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(60, 7, "Metric Checked", border=True, fill=True)
+    pdf.cell(40, 7, "ACI Limit", border=True, align="C", fill=True)
+    pdf.cell(40, 7, "Estimated Value", border=True, align="C", fill=True)
+    pdf.cell(40, 7, "Status", border=True, align="C", fill=True, new_x="LMARGIN", new_y="NEXT")
     
     # Row 1: DEF
     pdf.set_font("Helvetica", "", 10)
-    pdf.cell(60, 8, " Peak Core Temperature", border=True)
-    pdf.cell(40, 8, "< 70.0 °C", border=True, align="C")
-    pdf.cell(40, 8, f"{peak_core:.1f} °C", border=True, align="C")
+    pdf.cell(60, 7, " Peak Core Temperature", border=True)
+    pdf.cell(40, 7, "< 70.0 °C", border=True, align="C")
+    pdf.cell(40, 7, f"{peak_core:.1f} °C", border=True, align="C")
     status_def = "PASS" if not core_warn else "FAIL (Risk of DEF)"
     pdf.set_font("Helvetica", "B", 10)
     
@@ -224,14 +384,14 @@ def build_pdf_report(
     else:
         pdf.set_text_color(200, 30, 30)
         
-    pdf.cell(40, 8, status_def, border=True, align="C", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(40, 7, status_def, border=True, align="C", new_x="LMARGIN", new_y="NEXT")
     
     # Row 2: Cracking
     pdf.set_font("Helvetica", "", 10)
     pdf.set_text_color(60, 60, 60)
-    pdf.cell(60, 8, " Core-to-Surface Differential", border=True)
-    pdf.cell(40, 8, "< 21.0 °C", border=True, align="C")
-    pdf.cell(40, 8, f"{max_diff:.1f} °C", border=True, align="C")
+    pdf.cell(60, 7, " Core-to-Surface Differential", border=True)
+    pdf.cell(40, 7, "< 21.0 °C", border=True, align="C")
+    pdf.cell(40, 7, f"{max_diff:.1f} °C", border=True, align="C")
     status_diff = "PASS" if not diff_warn else "FAIL (Cracking Risk)"
     pdf.set_font("Helvetica", "B", 10)
     
@@ -241,23 +401,107 @@ def build_pdf_report(
     else:
         pdf.set_text_color(200, 30, 30)
         
-    pdf.cell(40, 8, status_diff, border=True, align="C", new_x="LMARGIN", new_y="NEXT")
-    pdf.ln(10)
+    pdf.cell(40, 7, status_diff, border=True, align="C", new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(5)
     
     # Sign-off Area
     pdf.set_font("Helvetica", "B", 10)
     pdf.set_text_color(15, 20, 28)
-    pdf.cell(90, 6, "Calculated By:", new_x="RIGHT", new_y="TOP")
-    pdf.cell(90, 6, "Reviewed & Approved By:", new_x="LMARGIN", new_y="NEXT")
-    pdf.ln(10)
+    pdf.cell(90, 5, "Calculated By:", new_x="RIGHT", new_y="TOP")
+    pdf.cell(90, 5, "Reviewed & Approved By:", new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(6)
     pdf.set_font("Helvetica", "", 10)
-    pdf.cell(90, 6, "_____________________________", new_x="RIGHT", new_y="TOP")
-    pdf.cell(90, 6, "_____________________________", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(90, 5, "_____________________________", new_x="RIGHT", new_y="TOP")
+    pdf.cell(90, 5, "_____________________________", new_x="LMARGIN", new_y="NEXT")
     pdf.set_font("Helvetica", "I", 9)
     pdf.set_text_color(120, 120, 120)
-    pdf.cell(90, 5, "EnkiTech Project Engineer", new_x="RIGHT", new_y="TOP")
-    pdf.cell(90, 5, "Burj Nawas Lead QA/QC Engineer", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(90, 4, "EnkiTech Project Engineer", new_x="RIGHT", new_y="TOP")
+    pdf.cell(90, 4, "Burj Nawas Lead QA/QC Engineer", new_x="LMARGIN", new_y="NEXT")
     
+    # Generate light-themed chart for PDF
+    fig_light = generate_thermal_chart(
+        placement_temp=placement_temp,
+        ambient_temp=ambient_temp,
+        raft_thickness=thickness,
+        max_temp_rise=max_temp_rise,
+        core_warning=core_warn,
+        is_dark=False
+    )
+    
+    # Export Plotly Figure to image bytes using Kaleido
+    chart_img_bytes = None
+    try:
+        chart_img_bytes = fig_light.to_image(format="png", width=800, height=450, scale=2)
+    except Exception as e:
+        pass
+        
+    # Page 2: Visualization and References
+    pdf.add_page()
+    pdf.set_y(40)
+    
+    # 5. 14-Day Thermal Evolution Analysis
+    pdf.set_font("Helvetica", "B", 12)
+    pdf.set_text_color(15, 20, 28)
+    pdf.cell(0, 8, "5. 14-Day Thermal Evolution Analysis", new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(2)
+    
+    # Insert Chart
+    if chart_img_bytes:
+        try:
+            import io
+            chart_img = Image.open(io.BytesIO(chart_img_bytes))
+            # Page width is 210mm. Margins are 15mm left and right, leaving 180mm printable width.
+            # We place the chart with width 180mm.
+            pdf.image(chart_img, x=15, y=pdf.get_y(), w=180)
+            # Advance y-position (height is 180 * 450 / 800 = 101.25mm)
+            pdf.set_y(pdf.get_y() + 105)
+        except Exception as e:
+            pdf.set_font("Helvetica", "I", 10)
+            pdf.set_text_color(200, 30, 30)
+            pdf.cell(0, 8, f"Error rendering chart: {str(e)}", new_x="LMARGIN", new_y="NEXT")
+            pdf.ln(5)
+    else:
+        pdf.set_font("Helvetica", "I", 10)
+        pdf.set_text_color(200, 30, 30)
+        pdf.cell(0, 8, "Warning: Simulation chart could not be generated.", new_x="LMARGIN", new_y="NEXT")
+        pdf.ln(5)
+            
+    # 6. Engineering References & ACI 207 Methodology
+    pdf.set_font("Helvetica", "B", 12)
+    pdf.set_text_color(15, 20, 28)
+    pdf.cell(0, 8, "6. Engineering References & ACI 207 Methodology", new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(2)
+    
+    # References text block
+    pdf.set_font("Helvetica", "", 9)
+    pdf.set_text_color(60, 60, 60)
+    
+    ref_desc = (
+        "Mass concrete structural components like raft foundations are subject to high volume change "
+        "and thermal stress during hydration. Under ACI 207.1R ('Guide to Mass Concrete'), the early-age "
+        "temperature rise is modeled using adiabatic hydration rates adjusted for cementitious composition and member thickness."
+    )
+    pdf.multi_cell(0, 5, ref_desc)
+    pdf.ln(3)
+    
+    # Bullet points
+    bullets = [
+        ("Effective Cementitious Content (C_eff):", "Calculated as Cement + 0.5 * GGBFS + 1.2 * Silica Fume. Slag (GGBFS) reduces early thermal load by half (0.5), while highly reactive Silica Fume contributes an exothermic factor of 1.2."),
+        ("Thickness & Thermal Inertia:", "Slabs thicker than 2.0 meters (200 cm) trap nearly 100% of their heat of hydration internally (approaching adiabatic conditions). As thickness increases, the cooling rate drops exponentially."),
+        ("Thermal Gradient Cracking:", "Rapid cooling of outer concrete faces creates a differential between the core and surface. ACI guidelines set the cracking limit threshold at 21.0 °C to prevent thermal cracking."),
+        ("Delayed Ettringite Formation (DEF):", "Exceeding 70.0 °C inside core concrete damages hydration products, causing expansion and micro-cracking when moisture penetrates the structure over time.")
+    ]
+    
+    for title, desc in bullets:
+        pdf.set_font("Helvetica", "B", 9)
+        pdf.set_text_color(15, 20, 28)
+        pdf.cell(65, 5, f" - {title}", new_x="RIGHT", new_y="TOP")
+        pdf.set_font("Helvetica", "", 9)
+        pdf.set_text_color(60, 60, 60)
+        # Printable width is 180mm. 65mm is used by the bullet title. So we have 115mm left.
+        pdf.multi_cell(115, 5, desc, new_x="LMARGIN", new_y="NEXT")
+        pdf.ln(1)
+        
     # Return PDF bytes
     pdf_bytes = pdf.output()
     return bytes(pdf_bytes)
@@ -624,106 +868,20 @@ if not alerts_triggered:
     )
 
 # ----------------- DATA VISUALIZATION (PLOTLY 14-DAY SIMULATION) -----------------
-days = np.linspace(0, 14, 250)
-t_peak = 2.5
-shape_factor = 1.8
-
-k_cooling = 0.05 + 25.0 / raft_thickness
-f_surface_transfer = 0.15 + 37.5 / raft_thickness
-
-# Core temp curve equation
-core_temp_curve = (
-    ambient_temp +
-    (placement_temp - ambient_temp) * np.exp(-k_cooling * days) +
-    max_temp_rise * (days / t_peak) ** shape_factor * np.exp(shape_factor * (1 - days / t_peak))
-)
-
-# Surface Temperature curve
-surface_temp_curve = ambient_temp + f_surface_transfer * (core_temp_curve - ambient_temp)
-
-# Flat Ambient Temperature
-ambient_curve = np.full_like(days, ambient_temp)
-
-# Dotted 21°C Differential Limit Line (Surface Temp + 21°C)
-differential_limit_curve = surface_temp_curve + 21.0
-
-# Build Plotly Chart (Dark Mode Styling)
-fig = go.Figure()
-
-# Ambient line
-fig.add_trace(go.Scatter(
-    x=days, y=ambient_curve,
-    mode='lines',
-    name='Ambient/Air Temp',
-    line=dict(color='#8b949e', width=2, dash='dash')
-))
-
-# Surface Temp line
-fig.add_trace(go.Scatter(
-    x=days, y=surface_temp_curve,
-    mode='lines',
-    name='Estimated Surface Temp',
-    line=dict(color='#58a6ff', width=3)
-))
-
-# Core Temp line (Red if warning, Peach-Gold if safe)
-fig.add_trace(go.Scatter(
-    x=days, y=core_temp_curve,
-    mode='lines',
-    name='Estimated Core Temp',
-    line=dict(color='#ff7b72' if core_warning else '#e8bc91', width=4)
-))
-
-# Cracking limit (Surface + 21°C)
-fig.add_trace(go.Scatter(
-    x=days, y=differential_limit_curve,
-    mode='lines',
-    name='Cracking Limit (Surface + 21°C)',
-    line=dict(color='#f85149', width=2, dash='dot')
-))
-
-# Chart Styling (Dark Theme)
-fig.update_layout(
-    title=dict(
-        text="<b>14-Day Thermal Evolution Analysis</b>",
-        font=dict(size=18, family="Outfit, sans-serif", color="#ffffff")
-    ),
-    xaxis=dict(
-        title="Time (Days)",
-        gridcolor="#1f2937",
-        zerolinecolor="#1f2937",
-        title_font=dict(color="#8b949e"),
-        tickfont=dict(color="#8b949e")
-    ),
-    yaxis=dict(
-        title="Temperature (°C)",
-        gridcolor="#1f2937",
-        zerolinecolor="#1f2937",
-        title_font=dict(color="#8b949e"),
-        tickfont=dict(color="#8b949e")
-    ),
-    plot_bgcolor='#090d13',
-    paper_bgcolor='#090d13',
-    legend=dict(
-        font=dict(color="#8b949e"),
-        bgcolor='rgba(15, 20, 28, 0.85)',
-        bordercolor='#1f2937',
-        borderwidth=1,
-        yanchor="top",
-        y=0.99,
-        xanchor="right",
-        x=0.99
-    ),
-    margin=dict(l=40, r=40, t=60, b=40),
-    hovermode='x unified',
-    height=500
+fig = generate_thermal_chart(
+    placement_temp=placement_temp,
+    ambient_temp=ambient_temp,
+    raft_thickness=raft_thickness,
+    max_temp_rise=max_temp_rise,
+    core_warning=core_warning,
+    is_dark=True
 )
 
 # Display Plotly Chart
 st.plotly_chart(fig, use_container_width=True)
 
 # ----------------- REFERENCE & DOCUMENTATION -----------------
-st.markdown(f"""
+st.markdown(fr"""
     <div class="ref-card">
         <h4 style="margin-top: 0; color: #e8bc91; font-family: Outfit, sans-serif;">📘 Engineering References & ACI 207 Methodology</h4>
         <p style="font-size: 13.5px; color: #8b949e; line-height: 1.6;">
