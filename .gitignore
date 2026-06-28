@@ -1,0 +1,19 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environments
+.env
+.venv
+venv/
+ENV/
+env/
+
+# Project generated reports
+Burj_Nawas_Thermal_Report.pdf
+test_output.pdf
+
+# OS generated files
+.DS_Store
+Thumbs.db
