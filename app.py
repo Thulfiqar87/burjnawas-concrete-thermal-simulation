@@ -44,33 +44,13 @@ st.set_page_config(
 
 # ----------------- UNIFIED PLOTTING UTILITY -----------------
 def generate_thermal_chart(
-    placement_temp,
-    ambient_temp,
-    raft_thickness,
-    max_temp_rise,
+    days,
+    ambient_curve,
+    core_temp_curve,
+    surface_temp_curve,
     core_warning,
     is_dark=True
 ):
-    days = np.linspace(0, 14, 250)
-    t_peak = 2.5
-    shape_factor = 1.8
-
-    k_cooling = 0.05 + 25.0 / raft_thickness
-    f_surface_transfer = 0.15 + 37.5 / raft_thickness
-
-    # Core temp curve equation
-    core_temp_curve = (
-        ambient_temp +
-        (placement_temp - ambient_temp) * np.exp(-k_cooling * days) +
-        max_temp_rise * (days / t_peak) ** shape_factor * np.exp(shape_factor * (1 - days / t_peak))
-    )
-
-    # Surface Temperature curve
-    surface_temp_curve = ambient_temp + f_surface_transfer * (core_temp_curve - ambient_temp)
-
-    # Flat Ambient Temperature
-    ambient_curve = np.full_like(days, ambient_temp)
-
     # Dotted 21°C Differential Limit Line (Surface Temp + 21°C)
     differential_limit_curve = surface_temp_curve + 21.0
 
@@ -174,10 +154,10 @@ def generate_thermal_chart(
 
 # ----------------- MATPLOTLIB FALLBACK PLOTTING UTILITY -----------------
 def generate_thermal_chart_matplotlib(
-    placement_temp,
-    ambient_temp,
-    raft_thickness,
-    max_temp_rise,
+    days,
+    ambient_curve,
+    core_temp_curve,
+    surface_temp_curve,
     core_warning
 ):
     import matplotlib
@@ -185,26 +165,6 @@ def generate_thermal_chart_matplotlib(
     import matplotlib.pyplot as plt
     import io
     
-    days = np.linspace(0, 14, 250)
-    t_peak = 2.5
-    shape_factor = 1.8
-
-    k_cooling = 0.05 + 25.0 / raft_thickness
-    f_surface_transfer = 0.15 + 37.5 / raft_thickness
-
-    # Core temp curve equation
-    core_temp_curve = (
-        ambient_temp +
-        (placement_temp - ambient_temp) * np.exp(-k_cooling * days) +
-        max_temp_rise * (days / t_peak) ** shape_factor * np.exp(shape_factor * (1 - days / t_peak))
-    )
-
-    # Surface Temperature curve
-    surface_temp_curve = ambient_temp + f_surface_transfer * (core_temp_curve - ambient_temp)
-
-    # Flat Ambient Temperature
-    ambient_curve = np.full_like(days, ambient_temp)
-
     # Dotted 21°C Differential Limit Line (Surface Temp + 21°C)
     differential_limit_curve = surface_temp_curve + 21.0
 
@@ -315,6 +275,7 @@ class ConcretePDFReport(FPDF):
 def build_pdf_report(
     placement_temp,
     ambient_temp,
+    ambient_temp_amp,
     cement,
     ggbfs,
     silica,
@@ -325,7 +286,13 @@ def build_pdf_report(
     peak_core,
     max_diff,
     core_warn,
-    diff_warn
+    diff_warn,
+    c_concrete,
+    k_concrete,
+    h_u,
+    cement_type,
+    retarder_hours,
+    insulation_type
 ):
     # Set margins first so they apply to all pages
     pdf = ConcretePDFReport()
@@ -376,24 +343,29 @@ def build_pdf_report(
     pdf.set_fill_color(240, 240, 240)
     pdf.set_font("Helvetica", "B", 10)
     pdf.set_text_color(50, 50, 50)
-    pdf.cell(100, 7, "Parameter Description", border=True, align="L", fill=True)
-    pdf.cell(40, 7, "Value", border=True, align="C", fill=True)
-    pdf.cell(40, 7, "Unit", border=True, align="C", fill=True, new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(90, 7, "Parameter Description", border=True, align="L", fill=True)
+    pdf.cell(70, 7, "Value", border=True, align="C", fill=True)
+    pdf.cell(20, 7, "Unit", border=True, align="C", fill=True, new_x="LMARGIN", new_y="NEXT")
     
     # Table Rows
-    pdf.set_font("Helvetica", "", 10)
+    pdf.set_font("Helvetica", "", 9)
     rows = [
         ("Concrete Placement Temperature (T_place)", f"{placement_temp:.1f}", "°C"),
-        ("Ambient Curing / Surface Temp (T_amb)", f"{ambient_temp:.1f}", "°C"),
+        ("Ambient Curing Temp (Mean / Variation)", f"{ambient_temp:.1f} (±{ambient_temp_amp:.1f})", "°C"),
         ("Cement Content", f"{cement:.0f}", "kg/m³"),
         ("GGBFS (Slag) Content", f"{ggbfs:.0f}", "kg/m³"),
         ("Silica Fume Content", f"{silica:.0f}", "kg/m³"),
         ("Foundation Slab Thickness (H)", f"{thickness:.0f}", "cm"),
+        ("Cement Type (Heat of Hydration)", f"{cement_type} ({h_u:.0f} kJ/kg)", ""),
+        ("Concrete Specific Heat (c)", f"{c_concrete:.0f}", "J/kg·K"),
+        ("Concrete Thermal Conductivity (K)", f"{k_concrete:.2f}", "W/m·K"),
+        ("Curing Insulation Method", f"{insulation_type}", ""),
+        ("Retarder Hydration Delay", f"{retarder_hours:.1f}", "hours"),
     ]
     for desc_row, val, unit in rows:
-        pdf.cell(100, 7, f" {desc_row}", border=True)
-        pdf.cell(40, 7, val, border=True, align="C")
-        pdf.cell(40, 7, unit, border=True, align="C", new_x="LMARGIN", new_y="NEXT")
+        pdf.cell(90, 6, f" {desc_row}", border=True)
+        pdf.cell(70, 6, val, border=True, align="C")
+        pdf.cell(20, 6, unit, border=True, align="C", new_x="LMARGIN", new_y="NEXT")
     pdf.ln(3)
     
     # 3. Calculations section
@@ -435,7 +407,7 @@ def build_pdf_report(
     pdf.cell(35, 5, f"{max_temp_rise:.1f} °C", new_x="RIGHT", new_y="TOP")
     pdf.set_font("Helvetica", "I", 9)
     pdf.set_text_color(120, 120, 120)
-    pdf.cell(0, 5, "  Formula: (C_eff / 100) * 12.0 * F_thickness", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 5, "  Formula: 0.82 * (C_eff * H_u) / (c * density) * F_thickness", new_x="LMARGIN", new_y="NEXT")
     pdf.ln(3)
     
     # 4. Compliance Check
@@ -498,15 +470,42 @@ def build_pdf_report(
     pdf.cell(90, 5, "_____________________________", new_x="LMARGIN", new_y="NEXT")
     pdf.set_font("Helvetica", "I", 9)
     pdf.set_text_color(120, 120, 120)
-    pdf.cell(90, 4, "EnkiTech Project Engineer", new_x="RIGHT", new_y="TOP")
+    pdf.cell(90, 4, "Contractor Site Engineer", new_x="RIGHT", new_y="TOP")
     pdf.cell(90, 4, "Burj Nawas Lead QA/QC Engineer", new_x="LMARGIN", new_y="NEXT")
     
+    # Recalculate physical simulation curves for PDF charts
+    days = np.linspace(0, 14, 250)
+    ambient_curve = ambient_temp + ambient_temp_amp * np.cos(2.0 * np.pi * (days - 0.625))
+    
+    alpha_ratio = (k_concrete / c_concrete) / (2.0 / 1000.0)
+    k_cooling = (0.05 + 25.0 / thickness) * alpha_ratio
+    
+    insulation_factors = {
+        "Bare Concrete": 1.0,
+        "Plastic Sheeting": 0.75,
+        "Single Insulation Blanket (R-1.0)": 0.40,
+        "Double Insulation Blanket (R-2.0)": 0.15
+    }
+    ins_factor = insulation_factors.get(insulation_type, 1.0)
+    f_surface_transfer_base = 0.15 + 37.5 / thickness
+    f_surface_transfer = 1.0 - (1.0 - f_surface_transfer_base) * ins_factor
+    
+    t_peak = 2.5 + (retarder_hours / 24.0)
+    shape_factor = 1.8
+    
+    core_temp_curve = (
+        ambient_temp +
+        (placement_temp - ambient_temp) * np.exp(-k_cooling * days) +
+        max_temp_rise * (days / t_peak) ** shape_factor * np.exp(shape_factor * (1 - days / t_peak))
+    )
+    surface_temp_curve = ambient_curve + f_surface_transfer * (core_temp_curve - ambient_curve)
+
     # Generate light-themed chart for PDF
     fig_light = generate_thermal_chart(
-        placement_temp=placement_temp,
-        ambient_temp=ambient_temp,
-        raft_thickness=thickness,
-        max_temp_rise=max_temp_rise,
+        days=days,
+        ambient_curve=ambient_curve,
+        core_temp_curve=core_temp_curve,
+        surface_temp_curve=surface_temp_curve,
         core_warning=core_warn,
         is_dark=False
     )
@@ -518,10 +517,10 @@ def build_pdf_report(
     except Exception as e_kaleido:
         try:
             chart_img_bytes = generate_thermal_chart_matplotlib(
-                placement_temp=placement_temp,
-                ambient_temp=ambient_temp,
-                raft_thickness=thickness,
-                max_temp_rise=max_temp_rise,
+                days=days,
+                ambient_curve=ambient_curve,
+                core_temp_curve=core_temp_curve,
+                surface_temp_curve=surface_temp_curve,
                 core_warning=core_warn
             )
         except Exception as e_matplotlib:
@@ -581,7 +580,10 @@ def build_pdf_report(
         ("Effective Cementitious Content (C_eff):", "Calculated as Cement + 0.5 * GGBFS + 1.2 * Silica Fume. Slag (GGBFS) reduces early thermal load by half (0.5), while highly reactive Silica Fume contributes an exothermic factor of 1.2."),
         ("Thickness & Thermal Inertia:", "Slabs thicker than 2.0 meters (200 cm) trap nearly 100% of their heat of hydration internally (approaching adiabatic conditions). As thickness increases, the cooling rate drops exponentially."),
         ("Thermal Gradient Cracking:", "Rapid cooling of outer concrete faces creates a differential between the core and surface. ACI guidelines set the cracking limit threshold at 21.0 °C to prevent thermal cracking."),
-        ("Delayed Ettringite Formation (DEF):", "Exceeding 70.0 °C inside core concrete damages hydration products, causing expansion and micro-cracking when moisture penetrates the structure over time.")
+        ("Delayed Ettringite Formation (DEF):", "Exceeding 70.0 °C inside core concrete damages hydration products, causing expansion and micro-cracking when moisture penetrates the structure over time."),
+        ("Chemical Retarders (ASTM C494):", "Set-retarding admixtures (Type B or D) delay cement hydration. This shifts the hydration peak (t_peak), giving concrete more time to dissipate heat early on and reducing the peak temperature."),
+        ("Thermal Properties (ASTM C177/C351):", "Concrete specific heat (c) and thermal conductivity (K) govern internal heat accumulation and dissipation. Higher conductivity speeds up cooling, while high specific heat capacity reduces peak temperature rise."),
+        ("Diurnal Curing Variations:", "Exposed slab surfaces track daily air temperature cycles, while the core remains insulated. The maximum thermal differential typically peaks at night when the ambient temperature is lowest.")
     ]
     
     for title, desc in bullets:
@@ -782,33 +784,6 @@ ambient_temp = st.sidebar.slider(
     help="Average expected ambient temperature during the first 14 days of curing."
 )
 
-cement = st.sidebar.number_input(
-    "Cement Content (kg/m³)",
-    min_value=50,
-    max_value=600,
-    value=220,
-    step=5,
-    help="Portland Cement content per cubic meter."
-)
-
-ggbfs = st.sidebar.number_input(
-    "GGBFS (Slag) Content (kg/m³)",
-    min_value=0,
-    max_value=400,
-    value=180,
-    step=5,
-    help="Ground Granulated Blast-Furnace Slag content per cubic meter."
-)
-
-silica = st.sidebar.number_input(
-    "Silica Content (kg/m³)",
-    min_value=0,
-    max_value=100,
-    value=20,
-    step=5,
-    help="Silica Fume content per cubic meter."
-)
-
 raft_thickness = st.sidebar.slider(
     "Raft Thickness (H, cm)",
     min_value=50,
@@ -818,13 +793,152 @@ raft_thickness = st.sidebar.slider(
     help="Thickness of the raft foundation slab in centimeters. Affects internal heat trapping and cooling rate."
 )
 
+# Expander 1: Mix & Cement Chemistry
+with st.sidebar.expander("Mix & Cement Chemistry", expanded=True):
+    cement = st.number_input(
+        "Cement Content (kg/m³)",
+        min_value=50,
+        max_value=600,
+        value=220,
+        step=5,
+        help="Portland Cement content per cubic meter."
+    )
+    ggbfs = st.number_input(
+        "GGBFS (Slag) Content (kg/m³)",
+        min_value=0,
+        max_value=400,
+        value=180,
+        step=5,
+        help="Ground Granulated Blast-Furnace Slag content per cubic meter."
+    )
+    silica = st.number_input(
+        "Silica Content (kg/m³)",
+        min_value=0,
+        max_value=100,
+        value=20,
+        step=5,
+        help="Silica Fume content per cubic meter."
+    )
+    cement_type = st.selectbox(
+        "Cement Type (ACI 207)",
+        options=["Type I (General Purpose)", "Type II (Moderate Heat)", "Type III (High Early Strength)", "Type IV (Low Heat)", "Type V (Sulfate Resistant)", "Custom Heat Profile"],
+        index=0,
+        help="Determines the base heat profile of the cement."
+    )
+    
+    h_u_defaults = {
+        "Type I (General Purpose)": 350.0,
+        "Type II (Moderate Heat)": 300.0,
+        "Type III (High Early Strength)": 390.0,
+        "Type IV (Low Heat)": 250.0,
+        "Type V (Sulfate Resistant)": 310.0
+    }
+    
+    if cement_type == "Custom Heat Profile":
+        h_u = st.number_input(
+            "Custom Heat of Hydration (H_u, kJ/kg)",
+            min_value=150.0,
+            max_value=500.0,
+            value=350.0,
+            step=10.0,
+            help="Specify heat of hydration for customized mix design."
+        )
+    else:
+        h_u = h_u_defaults[cement_type]
+
+# Expander 2: Concrete Thermal Properties
+with st.sidebar.expander("Concrete Thermal Properties", expanded=False):
+    c_concrete = st.slider(
+        "Specific Heat (c, J/kg·K)",
+        min_value=800,
+        max_value=1200,
+        value=1000,
+        step=50,
+        help="Specific heat capacity of concrete (default 1000 J/kg·K)."
+    )
+    k_concrete = st.slider(
+        "Thermal Conductivity (K, W/m·K)",
+        min_value=1.5,
+        max_value=3.5,
+        value=2.0,
+        step=0.1,
+        help="Thermal conductivity of concrete (default 2.0 W/m·K)."
+    )
+
+# Expander 3: Curing & Insulation
+with st.sidebar.expander("Curing & Insulation", expanded=False):
+    insulation_type = st.selectbox(
+        "Curing Insulation Method",
+        options=["Bare Concrete", "Plastic Sheeting", "Single Insulation Blanket (R-1.0)", "Double Insulation Blanket (R-2.0)"],
+        index=0,
+        help="Affects surface heat retention and core-to-surface gradient."
+    )
+
+# Expander 4: Environment & Admixtures
+with st.sidebar.expander("Environment & Admixtures", expanded=False):
+    ambient_temp_amp = st.slider(
+        "Diurnal Temp Variation (±°C)",
+        min_value=0.0,
+        max_value=15.0,
+        value=5.0,
+        step=0.5,
+        help="Amplitude of daily temperature fluctuations."
+    )
+    retarder_hours = st.slider(
+        "Retarder Delay (hours)",
+        min_value=0,
+        max_value=48,
+        value=0,
+        step=2,
+        help="Delay in peak hydration due to retarding chemical admixtures."
+    )
+
 # ----------------- CORE LOGIC & MATHEMATICAL CALCULATIONS -----------------
 total_cementitious = cement + ggbfs + silica
 effective_cement = cement + 0.5 * ggbfs + 1.2 * silica
 f_thickness = 1.0 - np.exp(-0.015 * raft_thickness)
-max_temp_rise = (effective_cement / 100.0) * 12.0 * f_thickness
-peak_core_temp = placement_temp + max_temp_rise
-max_differential = peak_core_temp - ambient_temp
+
+# Adiabatic temperature rise (calibrated with 0.82 efficiency factor to match baseline)
+density = 2400.0  # kg/m3
+dT_adiab = 0.82 * (effective_cement * (h_u * 1000.0)) / (c_concrete * density)
+max_temp_rise = dT_adiab * f_thickness
+
+# Generate 14-day curves to extract peak values dynamically
+days_sim = np.linspace(0, 14, 250)
+t_peak_sim = 2.5 + (retarder_hours / 24.0)
+shape_factor_sim = 1.8
+
+# Cooling rates scaled with K and c (compared to reference K=2.0, c=1000)
+alpha_ratio = (k_concrete / c_concrete) / (2.0 / 1000.0)
+k_cooling_sim = (0.05 + 25.0 / raft_thickness) * alpha_ratio
+
+# Surface transfer factor scaled with insulation
+insulation_factors = {
+    "Bare Concrete": 1.0,
+    "Plastic Sheeting": 0.75,
+    "Single Insulation Blanket (R-1.0)": 0.40,
+    "Double Insulation Blanket (R-2.0)": 0.15
+}
+ins_factor = insulation_factors.get(insulation_type, 1.0)
+f_surface_transfer_base = 0.15 + 37.5 / raft_thickness
+f_surface_transfer_sim = 1.0 - (1.0 - f_surface_transfer_base) * ins_factor
+
+# Ambient curve (diurnal temp variation)
+ambient_curve_sim = ambient_temp + ambient_temp_amp * np.cos(2.0 * np.pi * (days_sim - 0.625))
+
+# Core temperature curve (isolated from diurnal cycle)
+core_temp_curve_sim = (
+    ambient_temp +
+    (placement_temp - ambient_temp) * np.exp(-k_cooling_sim * days_sim) +
+    max_temp_rise * (days_sim / t_peak_sim) ** shape_factor_sim * np.exp(shape_factor_sim * (1 - days_sim / t_peak_sim))
+)
+
+# Surface temperature curve (directly affected by diurnal ambient fluctuations)
+surface_temp_curve_sim = ambient_curve_sim + f_surface_transfer_sim * (core_temp_curve_sim - ambient_curve_sim)
+
+# Extract precise peaks from the simulated curves
+peak_core_temp = float(np.max(core_temp_curve_sim))
+max_differential = float(np.max(core_temp_curve_sim - surface_temp_curve_sim))
 
 # ----------------- SIDEBAR PDF EXPORT FUNCTION -----------------
 st.sidebar.markdown("<hr style='border-color: #144e4c; margin-top: 20px; margin-bottom: 20px;'>", unsafe_allow_html=True)
@@ -837,6 +951,7 @@ diff_warning = max_differential > 21.0
 pdf_data = build_pdf_report(
     placement_temp=placement_temp,
     ambient_temp=ambient_temp,
+    ambient_temp_amp=ambient_temp_amp,
     cement=cement,
     ggbfs=ggbfs,
     silica=silica,
@@ -847,7 +962,13 @@ pdf_data = build_pdf_report(
     peak_core=peak_core_temp,
     max_diff=max_differential,
     core_warn=core_warning,
-    diff_warn=diff_warning
+    diff_warn=diff_warning,
+    c_concrete=c_concrete,
+    k_concrete=k_concrete,
+    h_u=h_u,
+    cement_type=cement_type,
+    retarder_hours=retarder_hours,
+    insulation_type=insulation_type
 )
 
 # Auto-save PDF report to local workspace folder as a bulletproof backup
@@ -880,6 +1001,7 @@ else:
 
 if pdf_save_status:
     st.sidebar.markdown("<p style='font-size: 11.5px; color: #e8bc91; margin-top: 8px; text-align: center; font-style: italic;'>📄 Auto-saved to project directory!</p>", unsafe_allow_html=True)
+
 
 # ----------------- MAIN PANEL LAYOUT -----------------
 st.markdown("<h1 style='color: #ffffff; margin-bottom: 5px; font-family: Outfit, sans-serif;'>BURJ NAWAS</h1>", unsafe_allow_html=True)
@@ -961,10 +1083,10 @@ if not alerts_triggered:
 
 # ----------------- DATA VISUALIZATION (PLOTLY 14-DAY SIMULATION) -----------------
 fig = generate_thermal_chart(
-    placement_temp=placement_temp,
-    ambient_temp=ambient_temp,
-    raft_thickness=raft_thickness,
-    max_temp_rise=max_temp_rise,
+    days=days_sim,
+    ambient_curve=ambient_curve_sim,
+    core_temp_curve=core_temp_curve_sim,
+    surface_temp_curve=surface_temp_curve_sim,
     core_warning=core_warning,
     is_dark=True
 )
