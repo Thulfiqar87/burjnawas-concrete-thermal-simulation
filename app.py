@@ -49,6 +49,7 @@ def generate_thermal_chart(
     core_temp_curve,
     surface_temp_curve,
     core_warning,
+    core_temp_limit=70.0,
     is_dark=True
 ):
     # Dotted 21°C Differential Limit Line (Surface Temp + 21°C)
@@ -69,6 +70,7 @@ def generate_thermal_chart(
         legend_bg = 'rgba(15, 20, 28, 0.85)'
         legend_border = '#1f2937'
         title_color = '#ffffff'
+        core_limit_color = '#f85149' if core_warning else '#dca874'
     else:
         # Light theme colors for PDF
         bg_color = '#ffffff'
@@ -81,6 +83,7 @@ def generate_thermal_chart(
         legend_bg = 'rgba(255, 255, 255, 0.85)'
         legend_border = '#cbd5e1'
         title_color = '#0f172a'
+        core_limit_color = '#dc2626' if core_warning else '#f97316'
 
     # Ambient line
     fig.add_trace(go.Scatter(
@@ -112,6 +115,15 @@ def generate_thermal_chart(
         mode='lines',
         name='Cracking Limit (Surface + 21°C)',
         line=dict(color=limit_color, width=2, dash='dot')
+    ))
+
+    # Core Temp limit line (70°C or 85°C)
+    core_limit_curve = np.full_like(days, core_temp_limit)
+    fig.add_trace(go.Scatter(
+        x=days, y=core_limit_curve,
+        mode='lines',
+        name=f'Core Temp Limit ({core_temp_limit:.0f}°C)',
+        line=dict(color=core_limit_color, width=2, dash='dash')
     ))
 
     # Chart Styling
@@ -158,7 +170,8 @@ def generate_thermal_chart_matplotlib(
     ambient_curve,
     core_temp_curve,
     surface_temp_curve,
-    core_warning
+    core_warning,
+    core_temp_limit=70.0
 ):
     import matplotlib
     matplotlib.use('Agg')
@@ -193,6 +206,11 @@ def generate_thermal_chart_matplotlib(
     
     ax.plot(days, differential_limit_curve, label='Cracking Limit (Surface + 21°C)', color='#dc2626', linewidth=1.5, linestyle=':')
     
+    # Core Temp Limit line
+    core_limit_curve = np.full_like(days, core_temp_limit)
+    core_limit_color = '#ef4444' if core_warning else '#f97316'
+    ax.plot(days, core_limit_curve, label=f'Core Temp Limit ({core_temp_limit:.0f}°C)', color=core_limit_color, linewidth=1.5, linestyle='--')
+
     # Titles & Labels
     ax.set_title("14-Day Thermal Evolution Analysis", fontsize=12, fontweight='bold', pad=12, color='#0f172a')
     ax.set_xlabel("Time (Days)", fontsize=10, labelpad=8, color='#475569')
@@ -292,7 +310,12 @@ def build_pdf_report(
     h_u,
     cement_type,
     retarder_hours,
-    insulation_type
+    insulation_type,
+    core_temp_limit=70.0,
+    any_exception_met=False,
+    exception_list=None,
+    fly_ash_f=0.0,
+    metakaolin=0.0
 ):
     # Set margins first so they apply to all pages
     pdf = ConcretePDFReport()
@@ -355,6 +378,8 @@ def build_pdf_report(
         ("Cement Content", f"{cement:.0f}", "kg/m³"),
         ("GGBFS (Slag) Content", f"{ggbfs:.0f}", "kg/m³"),
         ("Silica Fume Content", f"{silica:.0f}", "kg/m³"),
+        ("Fly Ash (Class F) Content", f"{fly_ash_f:.0f}", "kg/m³"),
+        ("Metakaolin Content", f"{metakaolin:.0f}", "kg/m³"),
         ("Foundation Slab Thickness (H)", f"{thickness:.0f}", "cm"),
         ("Cement Type (Heat of Hydration)", f"{cement_type} ({h_u:.0f} kJ/kg)", ""),
         ("Concrete Specific Heat (c)", f"{c_concrete:.0f}", "J/kg·K"),
@@ -381,9 +406,9 @@ def build_pdf_report(
     pdf.set_font("Helvetica", "", 10)
     pdf.set_text_color(60, 60, 60)
     pdf.cell(35, 5, f"{effective_cement:.1f} kg/m³", new_x="RIGHT", new_y="TOP")
-    pdf.set_font("Helvetica", "I", 9)
+    pdf.set_font("Helvetica", "I", 8.5)
     pdf.set_text_color(120, 120, 120)
-    pdf.cell(0, 5, "  Formula: Cement + 0.5 * GGBFS + 1.2 * Silica", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 5, "  Formula: Cement + 0.5*Slag + 1.2*Silica + 0.4*FlyAsh + 0.8*Metakaolin", new_x="LMARGIN", new_y="NEXT")
     pdf.ln(1)
     
     # Thickness Factor
@@ -428,7 +453,7 @@ def build_pdf_report(
     # Row 1: DEF
     pdf.set_font("Helvetica", "", 10)
     pdf.cell(60, 7, " Peak Core Temperature", border=True)
-    pdf.cell(40, 7, "< 70.0 °C", border=True, align="C")
+    pdf.cell(40, 7, f"< {core_temp_limit:.1f} °C", border=True, align="C")
     pdf.cell(40, 7, f"{peak_core:.1f} °C", border=True, align="C")
     status_def = "PASS" if not core_warn else "FAIL (Risk of DEF)"
     pdf.set_font("Helvetica", "B", 10)
@@ -457,7 +482,17 @@ def build_pdf_report(
         pdf.set_text_color(200, 30, 30)
         
     pdf.cell(40, 7, status_diff, border=True, align="C", new_x="LMARGIN", new_y="NEXT")
-    pdf.ln(5)
+    pdf.ln(2)
+
+    # Note regarding exceptions
+    if any_exception_met and exception_list:
+        pdf.set_font("Helvetica", "I", 8.5)
+        pdf.set_text_color(90, 90, 90)
+        active_ex_str = ", ".join(exception_list)
+        pdf.multi_cell(180, 4.5, f"* Note: Peak core temperature limit increased to 85°C per ACI 201.2R exceptions. Met conditions: {active_ex_str}.", border=False)
+        pdf.ln(2)
+    else:
+        pdf.ln(3)
     
     # Sign-off Area
     pdf.set_font("Helvetica", "B", 10)
@@ -507,6 +542,7 @@ def build_pdf_report(
         core_temp_curve=core_temp_curve,
         surface_temp_curve=surface_temp_curve,
         core_warning=core_warn,
+        core_temp_limit=core_temp_limit,
         is_dark=False
     )
     
@@ -521,7 +557,8 @@ def build_pdf_report(
                 ambient_curve=ambient_curve,
                 core_temp_curve=core_temp_curve,
                 surface_temp_curve=surface_temp_curve,
-                core_warning=core_warn
+                core_warning=core_warn,
+                core_temp_limit=core_temp_limit
             )
         except Exception as e_matplotlib:
             pass
@@ -577,10 +614,10 @@ def build_pdf_report(
     
     # Bullet points
     bullets = [
-        ("Effective Cementitious Content (C_eff):", "Calculated as Cement + 0.5 * GGBFS + 1.2 * Silica Fume. Slag (GGBFS) reduces early thermal load by half (0.5), while highly reactive Silica Fume contributes an exothermic factor of 1.2."),
+        ("Effective Cementitious Content (C_eff):", "Calculated as Cement + 0.5*Slag + 1.2*Silica + 0.4*FlyAsh + 0.8*Metakaolin. GGBFS (Slag) has a slower hydration rate (0.5), Silica Fume is highly reactive (1.2), Fly Ash (0.4) reduces thermal load, while Metakaolin (0.8) contributes moderately."),
         ("Thickness & Thermal Inertia:", "Slabs thicker than 2.0 meters (200 cm) trap nearly 100% of their heat of hydration internally (approaching adiabatic conditions). As thickness increases, the cooling rate drops exponentially."),
         ("Thermal Gradient Cracking:", "Rapid cooling of outer concrete faces creates a differential between the core and surface. ACI guidelines set the cracking limit threshold at 21.0 °C to prevent thermal cracking."),
-        ("Delayed Ettringite Formation (DEF):", "Exceeding 70.0 °C inside core concrete damages hydration products, causing expansion and micro-cracking when moisture penetrates the structure over time."),
+        ("Delayed Ettringite Formation (DEF):", "Under ACI 201.2R, concrete core temperature is limited to 70.0 °C to prevent DEF cracking. However, the limit can be increased to 85.0 °C if specific cement chemistry or SCM exceptions are satisfied."),
         ("Chemical Retarders (ASTM C494):", "Set-retarding admixtures (Type B or D) delay cement hydration. This shifts the hydration peak (t_peak), giving concrete more time to dissipate heat early on and reducing the peak temperature."),
         ("Thermal Properties (ASTM C177/C351):", "Concrete specific heat (c) and thermal conductivity (K) govern internal heat accumulation and dissipation. Higher conductivity speeds up cooling, while high specific heat capacity reduces peak temperature rise."),
         ("Diurnal Curing Variations:", "Exposed slab surfaces track daily air temperature cycles, while the core remains insulated. The maximum thermal differential typically peaks at night when the ambient temperature is lowest.")
@@ -819,6 +856,22 @@ with st.sidebar.expander("Mix & Cement Chemistry", expanded=True):
         step=5,
         help="Silica Fume content per cubic meter."
     )
+    fly_ash_f = st.number_input(
+        "Fly Ash (Class F) Content (kg/m³)",
+        min_value=0,
+        max_value=300,
+        value=0,
+        step=5,
+        help="Class F Fly Ash content per cubic meter."
+    )
+    metakaolin = st.number_input(
+        "Metakaolin Content (kg/m³)",
+        min_value=0,
+        max_value=100,
+        value=0,
+        step=5,
+        help="Metakaolin content per cubic meter."
+    )
     cement_type = st.selectbox(
         "Cement Type (ACI 207)",
         options=["Type I (General Purpose)", "Type II (Moderate Heat)", "Type III (High Early Strength)", "Type IV (Low Heat)", "Type V (Sulfate Resistant)", "Custom Heat Profile"],
@@ -845,6 +898,57 @@ with st.sidebar.expander("Mix & Cement Chemistry", expanded=True):
         )
     else:
         h_u = h_u_defaults[cement_type]
+
+# Expander ACI 201.2R Exceptions
+with st.sidebar.expander("ACI 201.2R Exceptions (85°C Limit)", expanded=False):
+    st.markdown(
+        "<p style='font-size: 12.5px; font-style: italic; line-height: 1.4; color: #e8bc91; margin-bottom: 12px;'>"
+        "ACI 201.2R allows the peak concrete core temperature limit to be increased from 70°C up to 85°C "
+        "if specific material-based prevention strategies are implemented to chemically suppress DEF.</p>",
+        unsafe_allow_html=True
+    )
+    
+    # Option A (Cement Chemistry)
+    st.markdown("<p style='font-size: 12.5px; font-weight: bold; margin-top: 8px; margin-bottom: 4px; color: #e8bc91;'>Option A: Verify Cement Chemistry</p>", unsafe_allow_html=True)
+    cement_chem_verified = st.checkbox(
+        "C3A <= 4.0% and SO3 <= 2.3%",
+        value=False,
+        help="Confirm that the specific Portland cement used has a tricalcium aluminate (C3A) content <= 4.0% and total sulfate (SO3) content <= 2.3%."
+    )
+    
+    # Option B (Supplementary Cementitious Materials)
+    st.markdown("<p style='font-size: 12.5px; font-weight: bold; margin-top: 8px; margin-bottom: 4px; color: #e8bc91;'>Option B: SCM Replacement Limits</p>", unsafe_allow_html=True)
+    
+    # Compute active SCM ratios
+    total_binder = cement + ggbfs + silica + fly_ash_f + metakaolin
+    if total_binder > 0:
+        slag_pct = (ggbfs / total_binder) * 100
+        fly_ash_pct = (fly_ash_f / total_binder) * 100
+        metakaolin_pct = (metakaolin / total_binder) * 100
+        silica_pct = (silica / total_binder) * 100
+    else:
+        slag_pct = fly_ash_pct = metakaolin_pct = silica_pct = 0.0
+        
+    slag_ok = slag_pct >= 35.0
+    fly_ash_ok = fly_ash_pct >= 25.0
+    metakaolin_ok = metakaolin_pct >= 10.0
+    silica_blend_ok = silica_pct >= 5.0 and (slag_pct >= 30.0 or fly_ash_pct >= 20.0)
+    
+    status_slag_icon = "✅" if slag_ok else "❌"
+    status_fly_icon = "✅" if fly_ash_ok else "❌"
+    status_meta_icon = "✅" if metakaolin_ok else "❌"
+    status_silica_icon = "✅" if silica_blend_ok else "❌"
+    
+    st.markdown(
+        f"<div style='font-size: 11.5px; border: 1px solid #144e4c; padding: 8px; border-radius: 6px; background-color: rgba(20,78,76,0.25); color: #e8bc91;'>"
+        f"<b>Auto SCM Check (Option B):</b><br>"
+        f"{status_slag_icon} Slag: <b>{slag_pct:.1f}%</b> (Need >= 35%)<br>"
+        f"{status_fly_icon} Class F Fly Ash: <b>{fly_ash_pct:.1f}%</b> (Need >= 25%)<br>"
+        f"{status_meta_icon} Metakaolin: <b>{metakaolin_pct:.1f}%</b> (Need >= 10%)<br>"
+        f"{status_silica_icon} Silica Blend: <b>{silica_pct:.1f}%</b> (Need >= 5% fume with 30% slag or 20% fly ash)"
+        f"</div>",
+        unsafe_allow_html=True
+    )
 
 # Expander 2: Concrete Thermal Properties
 with st.sidebar.expander("Concrete Thermal Properties", expanded=False):
@@ -894,9 +998,45 @@ with st.sidebar.expander("Environment & Admixtures", expanded=False):
     )
 
 # ----------------- CORE LOGIC & MATHEMATICAL CALCULATIONS -----------------
-total_cementitious = cement + ggbfs + silica
-effective_cement = cement + 0.5 * ggbfs + 1.2 * silica
+total_cementitious = cement + ggbfs + silica + fly_ash_f + metakaolin
+effective_cement = cement + 0.5 * ggbfs + 1.2 * silica + 0.4 * fly_ash_f + 0.8 * metakaolin
 f_thickness = 1.0 - np.exp(-0.015 * raft_thickness)
+
+# ACI 201.2R Exceptions check
+if total_cementitious > 0:
+    slag_pct = (ggbfs / total_cementitious) * 100
+    fly_ash_pct = (fly_ash_f / total_cementitious) * 100
+    metakaolin_pct = (metakaolin / total_cementitious) * 100
+    silica_pct = (silica / total_cementitious) * 100
+else:
+    slag_pct = fly_ash_pct = metakaolin_pct = silica_pct = 0.0
+
+slag_ok = slag_pct >= 35.0
+fly_ash_ok = fly_ash_pct >= 25.0
+metakaolin_ok = metakaolin_pct >= 10.0
+silica_blend_ok = silica_pct >= 5.0 and (slag_pct >= 30.0 or fly_ash_pct >= 20.0)
+
+option_a_met = cement_chem_verified
+option_b_met = slag_ok or fly_ash_ok or metakaolin_ok or silica_blend_ok
+
+any_exception_met = option_a_met or option_b_met
+core_temp_limit = 85.0 if any_exception_met else 70.0
+
+# Exception list to display
+exception_list = []
+if option_a_met:
+    exception_list.append("Option A: Cement chemistry verified (C3A <= 4.0% and SO3 <= 2.3%)")
+if option_b_met:
+    conditions = []
+    if slag_ok:
+        conditions.append(f"Slag replacement ({slag_pct:.1f}% >= 35%)")
+    if fly_ash_ok:
+        conditions.append(f"Class F Fly Ash ({fly_ash_pct:.1f}% >= 25%)")
+    if metakaolin_ok:
+        conditions.append(f"Metakaolin ({metakaolin_pct:.1f}% >= 10%)")
+    if silica_blend_ok:
+        conditions.append(f"Silica Fume Blend ({silica_pct:.1f}% >= 5% fume with Slag >= 30% or Fly Ash >= 20%)")
+    exception_list.append(f"Option B: SCM criteria met ({', '.join(conditions)})")
 
 # Adiabatic temperature rise (calibrated with 0.82 efficiency factor to match baseline)
 density = 2400.0  # kg/m3
@@ -944,7 +1084,7 @@ max_differential = float(np.max(core_temp_curve_sim - surface_temp_curve_sim))
 st.sidebar.markdown("<hr style='border-color: #144e4c; margin-top: 20px; margin-bottom: 20px;'>", unsafe_allow_html=True)
 st.sidebar.markdown("<h3 style='color: #e8bc91; font-size: 15px; text-transform: uppercase; letter-spacing: 0.05em;'>Export Options</h3>", unsafe_allow_html=True)
 
-core_warning = peak_core_temp > 70.0
+core_warning = peak_core_temp > core_temp_limit
 diff_warning = max_differential > 21.0
 
 # Generate PDF report data dynamically
@@ -968,7 +1108,12 @@ pdf_data = build_pdf_report(
     h_u=h_u,
     cement_type=cement_type,
     retarder_hours=retarder_hours,
-    insulation_type=insulation_type
+    insulation_type=insulation_type,
+    core_temp_limit=core_temp_limit,
+    any_exception_met=any_exception_met,
+    exception_list=exception_list,
+    fly_ash_f=fly_ash_f,
+    metakaolin=metakaolin
 )
 
 # Auto-save PDF report to local workspace folder as a bulletproof backup
@@ -986,7 +1131,7 @@ if pdf_save_status:
     st.sidebar.download_button(
         label="📥 Export PDF Report",
         data=pdf_bytes_to_download,
-        file_name=f"Burj_Nawas_Thermal_Report_{raft_thickness}cm.pdf",
+        file_name="Burj_Nawas_Thermal_Report.pdf",
         mime="application/pdf",
         use_container_width=True
     )
@@ -994,7 +1139,7 @@ else:
     st.sidebar.download_button(
         label="📥 Export PDF Report",
         data=pdf_data,
-        file_name=f"Burj_Nawas_Thermal_Report_{raft_thickness}cm.pdf",
+        file_name="Burj_Nawas_Thermal_Report.pdf",
         mime="application/pdf",
         use_container_width=True
     )
@@ -1016,7 +1161,7 @@ with col1:
         <div class="metric-card {card_class}">
             <div class="title">Peak Core Temp</div>
             <div class="value">{peak_core_temp:.1f}<span class="unit">°C</span></div>
-            <div class="title" style="margin-top: 8px; font-size: 10.5px; color: #8b949e;">DEF Limit: 70.0°C</div>
+            <div class="title" style="margin-top: 8px; font-size: 10.5px; color: #8b949e;">DEF Limit: {core_temp_limit:.1f}°C</div>
         </div>
     """, unsafe_allow_html=True)
 
@@ -1062,7 +1207,7 @@ if core_warning:
         f"""
         <div class="alert-banner alert-danger">
             <strong>❌ Delayed Ettringite Formation (DEF) Risk:</strong><br>
-            The estimated peak core temperature is <strong>{peak_core_temp:.1f}°C</strong>, which exceeds the critical threshold of <strong>70°C</strong>.
+            The estimated peak core temperature is <strong>{peak_core_temp:.1f}°C</strong>, which exceeds the limit of <strong>{core_temp_limit:.1f}°C</strong>.
             Temperatures above this level can permanently alter concrete chemistry, preventing standard ettringite formation and causing expansive cracking in service.
             <br><em>Mitigation: Implement nitrogen pre-cooling, reduce total cement content, or use a high-volume slag design.</em>
         </div>
@@ -1072,10 +1217,10 @@ if core_warning:
 
 if not alerts_triggered:
     st.markdown(
-        """
+        f"""
         <div class="alert-banner alert-success">
             <strong>✅ Design Validated:</strong><br>
-            Both peak core temperature (under 70°C) and core-to-surface thermal differential (under 21°C) are within safe design limits. This mix is cleared for the Burj Nawas raft foundation under the specified thickness and environmental conditions.
+            Both peak core temperature (under {core_temp_limit:.1f}°C) and core-to-surface thermal differential (under 21°C) are within safe design limits. This mix is cleared for the Burj Nawas raft foundation under the specified thickness and environmental conditions.
         </div>
         """,
         unsafe_allow_html=True
@@ -1088,6 +1233,7 @@ fig = generate_thermal_chart(
     core_temp_curve=core_temp_curve_sim,
     surface_temp_curve=surface_temp_curve_sim,
     core_warning=core_warning,
+    core_temp_limit=core_temp_limit,
     is_dark=True
 )
 
@@ -1105,7 +1251,7 @@ st.markdown(fr"""
             <li><strong>Effective Cementitious Content:</strong> The effective cementitious content ($C_{{eff}}$) is calculated as $Cement + 0.5 \times GGBFS + 1.2 \times Silica\ Fume$. GGBFS (Slag) has a slower hydration rate, reducing the early thermal load by half ($0.5$). Silica Fume is highly reactive and contributes to early strength development, but accelerates early hydration heat, which is modeled with an exothermic contribution factor of $1.2$.</li>
             <li><strong>Thickness & Thermal Inertia:</strong> Slabs thicker than 2.0 meters (200 cm) trap nearly 100% of their heat of hydration internally (approaching adiabatic conditions). As thickness increases, the cooling rate drops exponentially (heat is retained longer), and the surface-to-core differential becomes more severe.</li>
             <li><strong>Thermal Gradient Cracking:</strong> Rapid cooling of outer concrete faces creates a differential between the hot core and cooler surface. ACI guidelines set the cracking limit threshold at <strong>21°C (38°F)</strong> to prevent macro-cracking from severe thermal stress.</li>
-            <li><strong>Delayed Ettringite Formation (DEF):</strong> Exceeding <strong>70°C (158°F)</strong> inside core concrete damages hydration products, causing expansion and micro-cracking when moisture penetrates the structure over time.</li>
+            <li><strong>Delayed Ettringite Formation (DEF) & ACI 201.2R Limits:</strong> Under ACI 201.2R, the maximum core temperature is limited to <strong>70°C (158°F)</strong> to prevent DEF. However, the limit can be increased to <strong>85°C (185°F)</strong> if specific exceptions are met (e.g. slag ≥ 35%, silica fume ≥ 5%, low-alkali Type II/V cement, or low 1-day mortar strength). Peak core temperatures exceeding 85°C are strictly prohibited.</li>
         </ul>
     </div>
 """, unsafe_allow_html=True)
